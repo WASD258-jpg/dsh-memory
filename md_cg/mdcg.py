@@ -687,7 +687,24 @@ def exact_hit_of(q: str, content: str, *, _prepared=None) -> int:
 NEG_MIN_TERM = 2
 
 
-# 生效条件：neg_conditions 为字符串列表（假值按空列表）；逐条按空白切词、丢弃长度 < NEG_MIN_TERM 的词与已入选的重复词；词出现在 scene_text 中，且（own_topic_text 去全部空白后为空，或该词去全部空白后不是 own_topic_text 去空白文本的子串）才计入；返回按首次出现顺序排列的命中词列表，无命中返回空列表。
+# 生效条件：负条件两侧统一 NFKC + casefold；只做字符归一，不推断繁简与同义词。
+def _neg_normalize(text):
+    import unicodedata
+    return unicodedata.normalize("NFKC", str(text or "")).casefold()
+
+
+# 生效条件：只过滤紧邻否定词修饰的本次词面出现；后续仍有肯定出现时保留命中。
+def _neg_asserted(scene, term):
+    for match in re.finditer(re.escape(term), scene):
+        prefix = scene[:match.start()]
+        # 限定在紧邻谓词内，不把前一分句的「不」扩散到后一句。
+        denied = re.search(r"(?:不是|并非|不属于|并不属于|不处于|不在|没有|并没有|非|无|没|不)(?:一个|一名|任何|处于|属于)?$", prefix)
+        if denied is None:
+            return True
+    return False
+
+
+# 生效条件：neg_conditions 为字符串列表（假值按空列表）；逐条按空白切词、丢弃长度 < NEG_MIN_TERM 的词与已入选的重复词；词经 NFKC+casefold 归一后在 scene_text 中肯定出现，且（own_topic_text 去全部空白后为空，或该词去全部空白后不是 own_topic_text 去空白文本的子串）才计入；返回按首次出现顺序排列的命中词列表，无命中返回空列表。
 def neg_condition_hits(neg_conditions, scene_text, own_topic_text="") -> list:
     """负条件（不适用条件）命中判据——**检索面唯一的负判据单点**。
 
@@ -720,20 +737,21 @@ def neg_condition_hits(neg_conditions, scene_text, own_topic_text="") -> list:
     ——`test_neg_condition_hits.py` 有正向对照断言钉住（`问ZXQ7`/`刚才在干什么`/
     `问完全无关主题` 三条语料口径 + 自造多词条目），防「一律不拒」的退化解。
     """
-    scene = scene_text or ""
+    scene = _neg_normalize(scene_text)
     scene_norm = re.sub(r"\s+", "", scene)
-    own = re.sub(r"\s+", "", own_topic_text or "")
+    own = re.sub(r"\s+", "", _neg_normalize(own_topic_text))
     hits = []
     for n in (neg_conditions or []):
-        item = re.sub(r"\s+", "", str(n))
+        normalized = _neg_normalize(n)
+        item = re.sub(r"\s+", "", normalized)
         if not item:
             continue
         if len(item) >= NEG_MIN_TERM and item in scene_norm:
-            if not (own and item in own):
+            if not (own and item in own) and _neg_asserted(scene_norm, item):
                 hits.append(str(n))
             continue
-        words = [w for w in str(n).split() if len(w) >= NEG_MIN_TERM]
-        if words and all(w in scene for w in words):
+        words = [w for w in normalized.split() if len(w) >= NEG_MIN_TERM]
+        if words and all(_neg_asserted(scene, w) for w in words):
             if own and any(w in own for w in words):
                 continue
             hits.append(str(n))
@@ -4029,7 +4047,9 @@ class MdCG:
         node_dict = node_dict or {}
         bh = boundary_hit(node_dict, query, context)
         bq = is_boundary_query(query)
-        if bh["hit"] and bq:
+        # #362：仅「询问拒绝域本身」可摘词；具体情境的适用/不适用二选一不可摘。
+        boundary_definition = bool(re.search(r"什么(?:条件|情况)下不适用|何时不适用|不适用条件|边界条件|拒绝域", str(query or "")))
+        if bh["hit"] and bq and boundary_definition:
             qual = dict(MdCG.judge_qualification(
                 node_dict, strip_boundary_terms(query, bh["terms"]), context))
             qual["boundary_suppressed"] = True
