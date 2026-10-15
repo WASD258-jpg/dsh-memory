@@ -628,8 +628,8 @@ SCORE_MODES = ("legacy", "jaccard")
 SCORE_MODE = os.environ.get("MDCG_SCORE_MODE") or "legacy"
 
 
-# 生效条件：当 `qb` 与 `nb` 均为非空集合时，若 `mode` 或模块级 `SCORE_MODE` 为 `'jaccard'` 返回交集/并集，否则返回交集/len(`qb`)；任一为空返回 0.0。
-def lexical_sim(qb: set, nb: set, mode: str = None) -> float:
+# 生效条件：当 `qb` 与 `nb` 均为非空集合时，若 `mode` 或模块级 `SCORE_MODE` 为 `'jaccard'` 返回交集/并集，否则有 idf 时返回查询匹配权重和/查询总权重、无 idf 时返回交集/len(`qb`)；任一为空返回 0.0。
+def lexical_sim(qb: set, nb: set, mode: str = None, idf=None) -> float:
     """查询/文档二元组集合的相似度。mode 缺省取模块级 `SCORE_MODE`。
 
     显式传 mode 用于单点 A/B（不改全局口径即可对比两套打分）。
@@ -640,6 +640,10 @@ def lexical_sim(qb: set, nb: set, mode: str = None) -> float:
     if (mode or SCORE_MODE) == "jaccard":
         union = len(qb | nb)
         return inter / union if union else 0.0
+    if idf:
+        ordered = sorted(qb)
+        denom = sum(idf[g] for g in ordered)
+        return sum(idf[g] for g in ordered if g in nb) / denom if denom else 0.0
     return inter / len(qb)
 
 
@@ -4613,7 +4617,7 @@ class MdCG:
         return any(t and (t in body_l or t.lower() in tags_l) for t in terms)
 
 # 生效条件：semantic_on() 为真、semantic.canonical.pair_hits 导入成功且该 doc 的 fm 有 semantic 时 raw = min(1.0, max(lexical_sim(qb, 该文档 normalize_en 后的 bigram, mode), pair_hits(fm["semantic"], q)) + tag_bonus)，否则 raw = min(1.0, sim + tag_bonus)；tag_bonus 仅在 fm.tags 中有 t 满足 str(t) in q 或 q in str(t) 时为 0.05，否则 0.0；pools 为真值时 raw 再乘 pooling.weight_of(...) 并夹到 [0,1]；返回 scored 列表；
-    def _score(self, docs, q, qb, pools=None, mode=None):
+    def _score(self, docs, q, qb, pools=None, mode=None, idf=None):
         # 语义摘要路（MDCG_SEMANTIC=1 opt-in，默认关闭零回归）：
         # doc 侧 fm.semantic 标准原子序列 × query 归一序列的组合窗口共现分
         # （semantic/canonical.pair_hits），与词法分 **max 聚合**——语义路=
@@ -4652,7 +4656,7 @@ class MdCG:
             # readcache 启用时覆写为缓存版（Rust load_docs 预计算同款），
             # 基类默认即算即弃，行为与改动前逐位一致
             nb = self._doc_norm_bigrams(e, c)
-            sim = lexical_sim(qb, nb, mode)
+            sim = lexical_sim(qb, nb, mode, idf=idf)
             # issue #150：空 tag（`"" in q` 恒真）与空 q（`q in str(t)` 恒真）都会让
             # 加成恒发 ⇒ 两侧同步加守卫（Rust retrieval.rs 的 tag_bonus 同款）。
             tag_bonus = 0.05 if q and any(

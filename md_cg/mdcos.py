@@ -1399,9 +1399,27 @@ class MdCGOS(MdCG):
         # qb 与文档侧 normalize_en 口径对齐（同 MdCGOS.search，防大小写断裂）
         # + 英→中语素 bigram 补充（跨语词法分恢复）
         qb = bigrams(normalize_en(query)) | en_zh_bigrams(query)
+        # #363：IDF 统计来自完整的可读候选池，不取 LIKE/截断后的条件分布。
+        # 显式 jaccard 维持原公式；默认 legacy 加正值平滑 IDF。
+        from . import mdcg as _mdcg
+        idf = None
+        corpus = None
+        if _mdcg.SCORE_MODE != "jaccard":
+            corpus = self._read_many(entries, stat)
+            n_docs = len(corpus)
+            dfs = dict.fromkeys(qb, 0)
+            for e, _fm, content in corpus:
+                for gram in qb & self._doc_norm_bigrams(e, content):
+                    dfs[gram] += 1
+            idf = {gram: math.log(1.0 + (n_docs - df + 0.5) / (df + 0.5))
+                   for gram, df in dfs.items()}
         full_entries = entries
         entries = rrf_candidates.narrow(self, entries, terms, "lexical", query)
-        docs = self._read_many(entries, stat)
+        if corpus is None:
+            docs = self._read_many(entries, stat)
+        else:
+            paths = {e["path"] for e in entries}
+            docs = [d for d in corpus if d[0]["path"] in paths]
         # 语义资格（MDCG_SEMANTIC=1）：fm.semantic 节点无条件入池——
         # 语义摘要=检索面（设想核心），否则摘要层只在 LIKE 全空时生效
         hits = [d for d in docs
@@ -1416,7 +1434,7 @@ class MdCGOS(MdCG):
                 # Bigram candidates are a superset, so false positives may
                 # produce no LIKE hits. The importance fallback must use the
                 # original full pool, never the narrowed subset.
-                docs = self._read_many(full_entries, stat)
+                docs = corpus if corpus is not None else self._read_many(full_entries, stat)
                 rrf_candidates.lexical_fallback(self, len(full_entries))
             # 兜底池（LIKE 全空 = 无相关度信号）：截断依据=importance/created_at
             # 序，确定可复算；此时 bigram 部分匹配不足以定序（共现噪声），
@@ -1427,7 +1445,7 @@ class MdCGOS(MdCG):
                                      str(d[0].get("id") or ""))
             )[:GLOBAL_CAP]
             stat["cut_order"] = "importance_fallback"
-        scored = self._score(hits, query, qb)
+        scored = self._score(hits, query, qb, idf=idf)
         # 恒按相关度排序（原实现仅超 cap 时排序 → ≤cap 时返回 entries 枚举序，
         # 下游 seed/融合拿到无语义依据的顺序，不可复算）
         scored.sort(key=lambda x: (-x[1],

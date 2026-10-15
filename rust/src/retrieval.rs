@@ -64,6 +64,16 @@ pub fn lexical(
     let qnorm = crate::text::normalize_en(query);
     let qb = bigrams(&qnorm);
     let qbl = qb.len() as f64;
+    // #363：与 Python 相同，DF 取完整可读候选池；按字典序求和防 HashSet 浮点漂移。
+    let mut ordered: Vec<&String> = qb.iter().collect();
+    ordered.sort();
+    let n_docs = cand.iter().filter(|&&i| docs[i].is_some()).count() as f64;
+    let idf: Vec<f64> = ordered.iter().map(|gram| {
+        let df = cand.iter().filter(|&&i| docs[i].as_ref()
+            .map(|d| d.stripped.contains(gram.as_str())).unwrap_or(false)).count() as f64;
+        (1.0 + (n_docs - df + 0.5) / (df + 0.5)).ln()
+    }).collect();
+    let idf_total: f64 = idf.iter().sum();
 
     // 预筛：命中数（hits）；同时记住候选全集下标以便回退
     let mut hits: Vec<usize> = Vec::new();
@@ -94,7 +104,7 @@ pub fn lexical(
             None => continue,
         };
         let cap_hit = overlap_count(&qb, &d.stripped);
-        // legacy：`|qb ∩ db| / |qb|`（只归一化 query 侧 → 长文档必然霸榜）
+        // legacy：查询侧 IDF 加权覆盖率（完整可读候选池统计 DF）
         // jaccard：`|qb ∩ db| / |qb ∪ db|`（对称，长度自惩罚，无需调参）
         let sim = if jaccard {
             let denom = (qb.len() + d.db_len).saturating_sub(cap_hit);
@@ -104,7 +114,10 @@ pub fn lexical(
                 0.0
             }
         } else if qbl > 0.0 {
-            cap_hit as f64 / qbl
+            let matched: f64 = ordered.iter().zip(idf.iter())
+                .filter(|(gram, _)| d.stripped.contains(gram.as_str()))
+                .map(|(_, weight)| *weight).sum();
+            if idf_total > 0.0 { matched / idf_total } else { 0.0 }
         } else {
             0.0
         };
