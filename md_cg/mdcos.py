@@ -41,7 +41,7 @@ from . import (nodefile, routing, chain, subgraph, forgetting, protect,
                identity, consistency, metacognition, crypto, sustain,
                self_state, predict, evolution, weights, pooling,
                writelimit, reach, trust, roleviews, autonomy_modes, lifecycle,
-               rrf_candidates)
+               rrf_candidates, nodewrite)
 from .fsutil import (FileLock, atomic_write, append_jsonl, read_jsonl,
                      read_jsonl_tail, count_jsonl, publish)
 from .rotate import Rotator
@@ -4781,6 +4781,7 @@ class MdCGOS(MdCG):
         return None
 
 # 生效条件：kw 中 gated 为假值时旁路直接 ACCEPT 写入并返回 bypass；否则 writelimit.check 非 None 时按 CONVERGE→MERGE 并经 converge_into（带 session 归属）并入 target、DROP/DEFER 只记 forgetting 日志，无限流拦截时按 forgetting.assess 的四态处理（ACCEPT **先过档位闸 `_autonomy_gate_rewrite`**——既有 node_id ⇒ C 改写（confirm/plan 出单且不落盘、full 放行）、不存在 ⇒ A 新增（confirm/full 放行、plan fail-closed `autonomy_forbidden`），放行才走 add——issue50-d：落盘 importance 恒等于裁决 imp["score"]（hint 或启发式）并落 importance_source（"hint"|"heuristic"），add 的自动保护位只认显式声明；MERGE 走 reinforce（带 content 与 session，返回体带 content_sink 去向）；DROP 经 forgetting.record_drop 落去向留痕并带 dropped 去向单；DEFER 不落盘、经既有入队单点 self.propose 把**正文 + 声明 meta（**kw）+「为何待定」**送进审核队列（返回体带 proposed=pid；node_id 非字符串时兜底成内容派生 id 并写 proposed_id_fallback），并照旧只记 forgetting 留痕）。
+    @nodewrite.gated_transaction
     def remember_gated(self, node_id, content, layer="contextual", **kw):
         """写入情景层记忆前的**主动遗忘闸门**：三问 → 四态。
 

@@ -116,7 +116,7 @@ _BASELINE_MUTATIONS = {
 # （阈值触发轮转），两处均被本文件的 AST 相对-import 扫描命中——同规则登记。
 _SHIMS = ("twophase", "trust", "linkref", "mcp_server", "mdcg", "forgetting",
           "units", "coldverify", "hotcache", "hyperedge", "nodefile",
-          "fsutil", "rotate",
+          "fsutil", "rotate", "nodewrite",
           "autonomy_modes", "ghostref")
 _SHIM_TPL = ("import md_cg.%s as _m\n"
              "globals().update({k: v for k, v in vars(_m).items()\n"

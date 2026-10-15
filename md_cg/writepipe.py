@@ -394,62 +394,64 @@ class WritePipeline:
         # ——原先此处 `"mem_" + 毫秒` 与 mcp_server 的 mdcg_remember 分支各写一份，
         # 同毫秒自动写入铸出同一 id，被 add 的 upsert 语义静默顶替（无失败信号）。
         # 本处只委托，不复制判据。
-        ctx = {"cg": cg, "a": a, "nid": _nid, "verdict": None, "cvd": None}
-        for name, fn in self._before:
-            out = fn(ctx)
-            if out is not None:
-                ctx["halted_by"] = name
-                # #142②（2026-10-12 DSH 端）**未采纳**：原拟在短路出口补两段式账
-                # （修前只覆盖「全放行」与 gated 两段），使 abort 也可对账。
-                # 实测该改法与既有**已被守卫钉死**的不变量冲突：
-                # md_cg/test_twophase.py:9/⑧2「未落盘的分支（闸门拒绝 / 入队）
-                # 不产生 intent——没打算写就不记账」。改后 test_twophase 34/1（⑧2 红），
-                # 而该守卫文件不在本件写面（task-35：写面仅 writepipe.py + 本批守卫）
-                # ⇒ 按纪律**回退改动、把口径冲突上报**，不在本件单方面改语义。
-                # 详见 _team/writepipe/report.md ① ②与「需裁定」段。
-                # #142②【选项丙，2026-10-12 DSH 端】：上面「未采纳」的是**把短路
-                # 写进 _write_2pc.jsonl**——⑧2 不变量 + test_twophase 34/0 证明那条
-                # 改法必须回退。本批改走 issue §3.3(e) 方案 1：**另立**
-                # _write_attempts.jsonl，短路出口由此可观测，而两段式账本零漂移
-                # （test_write_return_shape::g_142_halt_2pc 的 delta==0 一字不动）。
-                # 响应 id 与请求 id 不同源时（如 _gate_audit 的 REJECT 出口：响应 id
-                # 是**负记忆记录 id**，即调用方取回该记录的句柄），账本仍两个 id 都留：
-                # id=请求 id（ctx 同源、四出口一致）、resp_id=调用方看到的 id（可 join）。
-                _append_attempt(cg, ctx["nid"], a, ATTEMPT_SHORT_CIRCUIT,
-                            halted_by=name, out=out)
-                _commit_visibility(cg, out)
-                return out
-        # ③ 两段式：闸门**全部放行**（确认要写）→ 先落意图，再执行落盘，
-        # 最后记结果。崩溃若发生在两者之间，`reconcile` 能据正文指纹回答
-        # 「那笔写入到底落盘了没有」，而不是留下一条无痕的静默记忆。
-        tok = twophase.begin(cg, ctx["nid"], a.get("content", ""),
-                             layer=a.get("layer") or "knowledge",
-                             actor="writepipe:executor")
-        try:
-            out = _executor(ctx)
-        except BaseException as exc:
-            # 执行器抛异常（权限拒绝/校验失败）= 写入未完成 → 账本记 error，
-            # 异常照抛不吞（两段式只记账，不改写既有错误语义）。
-            twophase.commit(cg, tok, status=twophase.STATUS_ERROR,
-                            reason=type(exc).__name__)
-            # #142②：执行器抛异常也是「一次尝试的出口」——先如实落一行再原样重抛，
-            # 不改既有错误语义（_append_attempt 自身不外抛；该出口无响应体，
-            # 故只有 id、无 resp_id）。
-            _append_attempt(cg, ctx["nid"], a, ATTEMPT_ERROR,
-                            error=type(exc).__name__)
-            raise
-        ctx["out"] = out
-        twophase.commit(cg, tok, status=twophase.STATUS_COMMITTED,
-                        reason="executor_ok")
-        # #142②：落盘成功也记一行（尝试账本回答「这次写入停在哪个出口」，
-        # 三态齐全才可对账；两段式账本照旧零漂移）。记账调用落在**语句边界**上
-        # ——上一版把锚点截在 `twophase.commit(...` 那一行、语句还没闭合就追加，
-        # 整份文件因此解析失败（last round: invalid syntax, line 320）。
-        _append_attempt(cg, ctx["nid"], a, ATTEMPT_COMMITTED, out=out)
-        for _name, fn in self._after:
-            fn(ctx, out)
-        _commit_visibility(cg, out)
-        return out
+        from .nodewrite import transaction
+        with transaction(cg, _nid):
+            ctx = {"cg": cg, "a": a, "nid": _nid, "verdict": None, "cvd": None}
+            for name, fn in self._before:
+                out = fn(ctx)
+                if out is not None:
+                    ctx["halted_by"] = name
+                    # #142②（2026-10-12 DSH 端）**未采纳**：原拟在短路出口补两段式账
+                    # （修前只覆盖「全放行」与 gated 两段），使 abort 也可对账。
+                    # 实测该改法与既有**已被守卫钉死**的不变量冲突：
+                    # md_cg/test_twophase.py:9/⑧2「未落盘的分支（闸门拒绝 / 入队）
+                    # 不产生 intent——没打算写就不记账」。改后 test_twophase 34/1（⑧2 红），
+                    # 而该守卫文件不在本件写面（task-35：写面仅 writepipe.py + 本批守卫）
+                    # ⇒ 按纪律**回退改动、把口径冲突上报**，不在本件单方面改语义。
+                    # 详见 _team/writepipe/report.md ① ②与「需裁定」段。
+                    # #142②【选项丙，2026-10-12 DSH 端】：上面「未采纳」的是**把短路
+                    # 写进 _write_2pc.jsonl**——⑧2 不变量 + test_twophase 34/0 证明那条
+                    # 改法必须回退。本批改走 issue §3.3(e) 方案 1：**另立**
+                    # _write_attempts.jsonl，短路出口由此可观测，而两段式账本零漂移
+                    # （test_write_return_shape::g_142_halt_2pc 的 delta==0 一字不动）。
+                    # 响应 id 与请求 id 不同源时（如 _gate_audit 的 REJECT 出口：响应 id
+                    # 是**负记忆记录 id**，即调用方取回该记录的句柄），账本仍两个 id 都留：
+                    # id=请求 id（ctx 同源、四出口一致）、resp_id=调用方看到的 id（可 join）。
+                    _append_attempt(cg, ctx["nid"], a, ATTEMPT_SHORT_CIRCUIT,
+                                halted_by=name, out=out)
+                    _commit_visibility(cg, out)
+                    return out
+            # ③ 两段式：闸门**全部放行**（确认要写）→ 先落意图，再执行落盘，
+            # 最后记结果。崩溃若发生在两者之间，`reconcile` 能据正文指纹回答
+            # 「那笔写入到底落盘了没有」，而不是留下一条无痕的静默记忆。
+            tok = twophase.begin(cg, ctx["nid"], a.get("content", ""),
+                                 layer=a.get("layer") or "knowledge",
+                                 actor="writepipe:executor")
+            try:
+                out = _executor(ctx)
+            except BaseException as exc:
+                # 执行器抛异常（权限拒绝/校验失败）= 写入未完成 → 账本记 error，
+                # 异常照抛不吞（两段式只记账，不改写既有错误语义）。
+                twophase.commit(cg, tok, status=twophase.STATUS_ERROR,
+                                reason=type(exc).__name__)
+                # #142②：执行器抛异常也是「一次尝试的出口」——先如实落一行再原样重抛，
+                # 不改既有错误语义（_append_attempt 自身不外抛；该出口无响应体，
+                # 故只有 id、无 resp_id）。
+                _append_attempt(cg, ctx["nid"], a, ATTEMPT_ERROR,
+                                error=type(exc).__name__)
+                raise
+            ctx["out"] = out
+            twophase.commit(cg, tok, status=twophase.STATUS_COMMITTED,
+                            reason="executor_ok")
+            # #142②：落盘成功也记一行（尝试账本回答「这次写入停在哪个出口」，
+            # 三态齐全才可对账；两段式账本照旧零漂移）。记账调用落在**语句边界**上
+            # ——上一版把锚点截在 `twophase.commit(...` 那一行、语句还没闭合就追加，
+            # 整份文件因此解析失败（last round: invalid syntax, line 320）。
+            _append_attempt(cg, ctx["nid"], a, ATTEMPT_COMMITTED, out=out)
+            for _name, fn in self._after:
+                fn(ctx, out)
+            _commit_visibility(cg, out)
+            return out
 
 
 # --------------------------------------------------------------------------
