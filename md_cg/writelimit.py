@@ -87,6 +87,19 @@ def _is_encrypted_level(sensitivity) -> bool:
     return _iel(sensitivity)
 
 
+# 生效条件：sensitivity 为本次写入的声明密级；经 landing.declared_level 解析（None=缺省档）后
+# 超出台账上限（internal）即返回 True——不落模板签名（签名 sk 是正文的去数字明文骨架）。
+def _sig_forbidden(sensitivity) -> bool:
+    """该写入能否在明文台账留模板签名（安全重构 P3：由「加密级」扩到「超出台账上限」）。
+
+    #313 只挡了加密级（private/secret）；restricted 不加密但限扩散，其正文骨架
+    同样不该躺进明文台账。判据归 landing 咽喉单点；_is_encrypted_level 保留作
+    「盘上是否密文」的语义判据（#313 守卫 K10 钉住），不再决定签名去留。
+    """
+    from . import landing
+    return landing.exceeds(landing.declared_level(sensitivity))
+
+
 # 生效条件：形参 content 为假值返回 None；否则 strip 后若 _RE_TITLE 命中且标题骨架 s 非空且 len(s)>=MIN_SKELETON 返回 "t:"+s，否则返回 None；无标题且 len(text)>=MAX_CONTENT 返回 None；无标题且 len(text)<MAX_CONTENT 时全文骨架 s 非空且 len(s)>=MIN_SKELETON 返回 s，否则返回 None；
 def template_signature(content: str):
     """同模板流水签名：标题模板优先，其次全文骨架。
@@ -238,7 +251,7 @@ def check(cg, content, layer="contextual", role=None, node_id=None,
                 f"ratelimit:{key}:>{RATE_MAX}in{int(RATE_WINDOW)}s"}
     # 2) 同构聚合（加密级跳过签名——见 _is_encrypted_level，issue #313）
     sig = template_signature(content)
-    if sig and not _is_encrypted_level(sensitivity):
+    if sig and not _sig_forbidden(sensitivity):
         rec = st["sigs"].get(sig)
         if not isinstance(rec, dict):
             # 记账被外部损坏（dict 内混入标量/序列）：按「无记录」重占位，不把
@@ -286,7 +299,7 @@ def record_accepted(cg, node_id, content, now=None, sensitivity=None) -> None:
     """ACCEPT 落盘后确保签名→节点映射存在（check 已预占位，此处兜底）。"""
     sig = template_signature(content)
     # issue #313：加密级不落签名（与 check 同一判据单点）
-    if not sig or _is_encrypted_level(sensitivity):
+    if not sig or _sig_forbidden(sensitivity):
         return
     now = float(now if now is not None else time.time())
     st = _load(cg)

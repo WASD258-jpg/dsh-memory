@@ -382,11 +382,29 @@ def assess(cg, content, layer="contextual", role=None, verification_basis=None,
 
 # ---------------------------------------------------------------- 落库动作
 
-# 生效条件：cg 与 rec 必填；append_jsonl 写 cg.root/LOG_FILE 抛任意异常时被吞掉，仍返回 rec。
+# 生效条件：rec 为 dict；若含非空 dropped_content，返回把它置 None、content_redacted 置 True 的副本；否则原样返回副本。
+def _scrub_log_record(rec):
+    """遗忘留痕的脱敏骨架：去正文，保留 content_sha1 / content_chars 可对账。"""
+    out = dict(rec or {})
+    if out.get("dropped_content"):
+        out["dropped_content"] = None
+        out["content_redacted"] = True
+    return out
+
+
+# 生效条件：cg 与 rec 必填；经 landing.append_ledger 写 cg.root/LOG_FILE（超限去正文），抛任意异常时被吞掉，仍返回 rec。
 def log(cg, rec):
-    """裁决留痕（append-only）。DROP/DEFER 也留痕——否则遗忘变黑箱。"""
+    """裁决留痕（append-only）。DROP/DEFER 也留痕——否则遗忘变黑箱。
+
+    安全重构 P3：经 landing.append_ledger 咽喉。携带正文的字段（dropped_content）
+    在来源密级超出台账上限时只留骨架；记录未带 sensitivity 时按最高档（fail-closed）——
+    不带正文字段的裁决行经 _scrub_log_record 原样通过，格式逐位不变。
+    """
+    from . import landing
     try:
-        append_jsonl(os.path.join(cg.root, LOG_FILE), rec)
+        landing.append_ledger(os.path.join(cg.root, LOG_FILE), rec,
+                              level=(rec or {}).get("sensitivity"),
+                              scrub=_scrub_log_record)
     except Exception:
         pass
     return rec
@@ -526,7 +544,11 @@ def record_drop(cg, content, node_id, target=None, verdict=None, layer=None,
     """
     flat = " ".join((content or "").split())
     digest = hashlib.sha1(flat.encode("utf-8")).hexdigest()[:12] if flat else ""
-    enc = bool(flat) and crypto.is_encrypted_level(sensitivity)
+    # 安全重构 P3：判据由「加密级」放宽到「超出台账上限」——restricted（不加密但限扩散）
+    # 此前以明文落进 _forgetting.jsonl。sensitivity 为本次写入的声明值 ⇒ declared_level。
+    from . import landing as _landing
+    _lvl = _landing.declared_level(sensitivity)
+    enc = bool(flat) and _landing.exceeds(_lvl)
     t = time.time()
     trace_id = f"drop-{node_id}-{int(t * 1000)}"
     log(cg, {"t": t, "node_id": node_id, "layer": layer, "verdict": "DROP",
@@ -537,7 +559,7 @@ def record_drop(cg, content, node_id, target=None, verdict=None, layer=None,
              "trace_id": trace_id, "content_sha1": digest,
              "content_chars": len(flat),
              "dropped_content": None if enc else (flat or None),
-             "content_redacted": enc})
+             "content_redacted": enc, "sensitivity": _lvl})
     sink = {"verdict": "DROP", "duplicate_with": target, "trace_id": trace_id,
             "kept_in": LOG_FILE,
             "retrieval": (f"{LOG_FILE} 内 trace_id={trace_id}"

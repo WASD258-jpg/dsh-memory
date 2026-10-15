@@ -76,7 +76,8 @@ LOG_FILE = "_consistency.jsonl"
 #
 # 序与 `security.SENSITIVITY_ORDER` 逐位同序（此处复制而非 import：本模块被
 # `mdcos`/`security` 下游大量引用，反向 import 会成环）。
-_LEDGER_LEVELS = ("public", "internal", "restricted", "private", "secret")
+# 安全重构 P3：不再另立一份密级序——直接引 security.SENSITIVITY_ORDER（单一真源）。
+from .security import SENSITIVITY_ORDER as _LEDGER_LEVELS  # noqa: E402
 
 # 台账里承载「条件原文 / 功能名槽」的字段——高于 internal 时一律去原文。
 _LEDGER_TEXT_FIELDS = ("pos", "neg")
@@ -1100,8 +1101,8 @@ def check(cg, content, layer=None, condition_space=None,
         _lv = [ledger_sens.get(x) for x in
                {c.get("with") for c in allc if isinstance(c, dict)}]
         _lvl = ledger_level(sensitivity, _lv)
-        _lr = _level_rank(_lvl)
-        _redact = bool(_lr is not None and _lr > _LEDGER_LEVELS.index("internal"))
+        from . import landing as _landing
+        _redact = _landing.exceeds(_lvl)          # 安全重构 P3：上限判据归咽喉单点
         _rec = scrub_record(rec) if _redact else dict(rec)
         _rec["sensitivity"] = _lvl
         _rec["redacted"] = _redact
@@ -1165,10 +1166,20 @@ def _fire_flywheel(cg, query, verdict, reason, missing, conflicts=None,
 
 # 生效条件：cg 与 rec 给出时，将 rec 序列化为 JSON 行追加到 cg.root 下 LOG_FILE；追加前若末字节不是换行（上一条被截在半行），先补一个换行再写本条，避免两条粘连成一行不可解析；OSError 被吞掉，返回 rec；
 def log(cg, rec):
-    """append-only 留痕：每条判定可审计。"""
+    """append-only 留痕：每条判定可审计。
+
+    安全重构 P3：落盘经 landing.append_ledger 咽喉——记录自带的 `sensitivity`
+    超出台账上限（internal）即过 scrub_record 去原文；**未带 sensitivity 的记录按
+    最高档处理**（fail-closed：直接调用 log 漏标密级不再静默落原文）。
+    行格式（json.dumps 缺省分隔符）与 issue #225 的写入端防粘连逐字保留——
+    咽喉只决定**落什么**（land_record），不改**怎么落**。
+    """
+    from . import landing
     p = os.path.join(cg.root, LOG_FILE)
     try:
-        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        out = landing.land_record(rec, level=(rec or {}).get("sensitivity"),
+                                  scrub=scrub_record)
+        line = json.dumps(out, ensure_ascii=False) + "\n"
         # issue #225：写入端也防粘连——读取端容错只能让台账**可读**；残行若不补换行，
         # 本条会与残行拼成一行，两条留痕一起读不出来（丢的是**新**记录）。
         if ends_mid_line(p):
