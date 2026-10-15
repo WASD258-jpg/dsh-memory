@@ -117,8 +117,16 @@ def main():
     check("internal 并入 private ⇒ 非降密级（False，不在本判据范围）",
           merge_downgrades("private", "internal") is False)
     check("同档 ⇒ False（不误伤）", merge_downgrades("internal", "internal") is False)
-    check("None 按 DEFAULT_SENSITIVITY（internal）处理",
-          merge_downgrades("internal", None) is False and merge_downgrades(None, "private") is True)
+    # 安全重构 P2（使用者 2026-10-15 裁定）：incoming 未知 ⇒ 按最高档 fail-closed；
+    # target 未知 ⇒ 按缺省档（与读面可见性同口径）。
+    check("incoming None ⇒ 按最高档（fail-closed）",
+          merge_downgrades("internal", None) is True
+          and merge_downgrades("private", None) is True
+          and merge_downgrades("secret", None) is False
+          and merge_downgrades("internal", "") is True)
+    check("target None ⇒ 按 DEFAULT_SENSITIVITY（internal）",
+          merge_downgrades(None, "private") is True
+          and merge_downgrades(None, "internal") is False)
     check("非法密级 ⇒ True（fail-closed：判不了就不许合并）",
           merge_downgrades("internal", "bogus") is True)
 

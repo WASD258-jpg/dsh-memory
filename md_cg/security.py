@@ -69,11 +69,12 @@ def _rank(level: str) -> int:
         raise AccessDenied(f"未知敏感度/密级：{level}") from None
 
 
-# 生效条件：target_sensitivity / incoming_sensitivity 为 SENSITIVITY_ORDER 成员或 None
-# （None 按 DEFAULT_SENSITIVITY 处理）时，返回「把 incoming 内容的明文并入 target 节点
-# **是否导致该内容的有效密级下降**」＝ incoming 密级**严格高于** target 密级（合并后它按
-# target 的低档可见）；任一形参非法（_rank 抛 AccessDenied）时**按降密级处理**
-# （fail-closed：判不了就不许合并）。
+# 生效条件：返回「把 incoming 内容的明文并入 target 节点**是否导致该内容的有效密级下降**」
+# ＝ incoming 密级**严格高于** target 密级。incoming 为 None/空串（**未知**）时按最高档
+# （SENSITIVITY_ORDER[-1]）处理（fail-closed，安全重构 P2，使用者 2026-10-15 裁定）；
+# target 为 None/空串时按 DEFAULT_SENSITIVITY 处理（与读面 `_readable` 对缺 sensitivity
+# 节点的实际可见性同口径——目标节点缺字段时它**就是**按缺省档被看见）；任一形参非法
+# （_rank 抛 AccessDenied）时按降密级处理（判不了就不许合并）。
 def merge_downgrades(target_sensitivity: str, incoming_sensitivity: str) -> bool:
     """合并是否**降密级** —— 唯一判据单点（issue #148）。
 
@@ -97,10 +98,28 @@ def merge_downgrades(target_sensitivity: str, incoming_sensitivity: str) -> bool
     """
     try:
         tgt = _rank(target_sensitivity or DEFAULT_SENSITIVITY)
-        new = _rank(incoming_sensitivity or DEFAULT_SENSITIVITY)
+        # 安全重构 P2：incoming 未知 ⇒ 按最高档（fail-closed）。#313 #315 #345 的
+        # 直接根因都是调用方漏传 sensitivity、None 按 internal 算 ⇒ 判据放行。
+        new = _rank(incoming_sensitivity or SENSITIVITY_ORDER[-1])
     except AccessDenied:
         return True                      # fail-closed：判不了就不许合并
     return new > tgt
+
+
+# 生效条件：declared 为**写入入口**调用方本次声明的密级；假值返回 DEFAULT_SENSITIVITY，否则原样返回。
+# 只用于「这段内容即将按此档落盘」的写入入口（未声明的写入按缺省档落盘、读面按缺省档可见——事实，
+# 不是猜测）；派生内容（来源密级未传下来）**不得**用它补缺省，应原样传 None 交 merge_downgrades 按最高档。
+def declared_write_sensitivity(declared) -> str:
+    """写入入口的声明密级：未声明 = 本条将以缺省档落盘。"""
+    return declared or DEFAULT_SENSITIVITY
+
+
+# 生效条件：fm 为 dict（节点 frontmatter）或 None；返回其 sensitivity 字段，缺失/空串时返回
+# DEFAULT_SENSITIVITY——即读面对该节点的**实际可见档**。只用于「密级取自已落盘节点」的调用点；
+# 「密级取自调用方形参」的调用点**不得**用它补缺省（那正是 #313 #315 #345 的漏传病象）。
+def node_effective_sensitivity(fm) -> str:
+    """已落盘节点的有效密级（缺字段 = 缺省档，与 `_readable` 同口径）。"""
+    return ((fm or {}).get("sensitivity") or DEFAULT_SENSITIVITY)
 
 
 # 生效条件：全部形参均可省略、clearance 默认取模块常量 DEFAULT_SENSITIVITY，构造时先经 _rank(clearance) 校验，随后 session 为假值（含空串）回落为 sess_+uuid 十二位、role 假值回落 "system"、expires_at 为假值（含 0）置 None、layers_allow/ops_allow 为 None 时保持 None 否则转 tuple、theory_ok 经 bool() 转换。

@@ -551,6 +551,11 @@ def record_drop(cg, content, node_id, target=None, verdict=None, layer=None,
     return sink
 
 
+# 生效条件：content 为 str 且 strip 后非空时返回 True；None / 空白串 / 非 str 返回 False。
+def _has_incoming_text(content) -> bool:
+    return isinstance(content, str) and bool(content.strip())
+
+
 # 生效条件：cg 与 node_id 必填，delta 默认 0.05，content 默认 None（不传即与改动前逐位一致：只改 frontmatter、正文原样写回）；cg.get(node_id) 抛异常或返回假值时返回 None；随后以节点真层/敏感度过 protect.guard_overwrite（层闸 + 保护闸，override 为真时先快照 + 审计）；imp 跨过 PROTECT_IMPORTANCE 即写 protected；content 非 None 时按 forgetting.aggregate_line 把「目标正文没有的」行追加为聚合行（零新增信息则不追加），session/actor 非空时按 forgetting.note_source 并列记归属；写盘后同步内存索引条目并**标脏**（cg._dirty[node_id]=e，推进读缓存代际与索引增量日志）；返回体带 content_sink（新正文去向：节点/行/行号）与 source（归属）。
 def reinforce(cg, node_id, delta=0.05, override=False, actor=None,
               content=None, session=None, sensitivity=None, src_id=None):
@@ -608,7 +613,9 @@ def reinforce(cg, node_id, delta=0.05, override=False, actor=None,
     # MERGE 会把 incoming 明文追加进既有节点，而目标节点 sensitivity 不变 ⇒ 低密级
     # 明文获得目标档可见性（访客可读）。判为降密级即 fail-closed，不写盘、不标脏。
     from .security import merge_downgrades as _merge_downgrades
-    if _merge_downgrades(fm.get("sensitivity"), sensitivity):
+    # 安全重构 P2：只在**确有 incoming 正文**时判（content 为空 = 纯强化计数，
+    # 不并入任何文字，无降密级可言；否则 incoming 未知按最高档会误拒纯强化）。
+    if _has_incoming_text(content) and _merge_downgrades(fm.get("sensitivity"), sensitivity):
         return {"ok": False, "error": "merge_downgrade_refused",
                 "node_id": node_id,
                 "target_sensitivity": fm.get("sensitivity"),

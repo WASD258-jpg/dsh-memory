@@ -235,8 +235,17 @@ def e_group():
         except Exception:                               # noqa: BLE001
             return False
 
+    # 安全重构 P2：写入入口改经 declared_write_sensitivity(...) 解析——包了一层的
+    # 字面常量（`declared_write_sensitivity(None)` / `(\"internal\")`）同样算写死。
+    def _unwrap(src):
+        src = (src or "").strip()
+        for pre in ("_security.declared_write_sensitivity(", "declared_write_sensitivity("):
+            if src.startswith(pre) and src.endswith(")"):
+                return src[len(pre):-1].strip()
+        return src
+
     badval = [(l, k["sensitivity"]) for l, k in sites
-              if "sensitivity" in k and _is_literal(k["sensitivity"])]
+              if "sensitivity" in k and _is_literal(_unwrap(k["sensitivity"]))]
     _check("E3 传的是调用方手上的密级（表达式/形参），不是写死的字面常量",
            not badval, badval)
     conv = _call_sites("md_cg/mdcos.py", "converge_into")
@@ -248,35 +257,35 @@ def e_group():
 # ------------------------------------------------------------------ 定点变异
 #: (说明, 相对仓根的路径, 原文, 替换, 预期转红的前缀元组)
 _MUTATIONS = (
-    # #397（28d2e4e 前已合入）把 MERGE 支实参从 kw.get("sensitivity") 改为有效密级
-    # `_sens_eff`，旧锚点命中 0 次、V1/V2 形同虚设（与 #313 V4/V5 随 #345 失效同类）。
-    # 锚点随真源迁到 reinforce 调用处的 `sensitivity=_sens_eff,`；该行在函数内出现
-    # 两次（另一处是 record_drop），故带上紧随其后的 #417 注释行定位到唯一一处。
-    ("V1 MERGE 支不再传密级（回到 #315 修前形态）",
+    # 安全重构 P2：MERGE / prefeed 两支改为经 security.declared_write_sensitivity 显式
+    # 解析写入入口密级（未声明 = 缺省档落盘）。「漏传」此后由 merge_downgrades 的
+    # 未知=最高档兜住，故变异改钉**解析器被喂错值**这一仍会泄漏的回退形态。
+    # MERGE 支实参（#397）是有效密级 `_sens_eff`，P2 在其计算末尾单点收尾解析。V1 钉
+    # 「声明值被丢掉」：声明分支改成 None ⇒ 单点解析成缺省档 internal ⇒ private 并入。
+    ("V1 MERGE 支丢掉声明值（解析器收到 None ⇒ 按缺省档放行，回到 #315 病象）",
      "md_cg/mdcos.py",
-     "\r\n" + " " * 16 + "sensitivity=_sens_eff," + "\r\n" + " " * 16 + "# #417",
-     "\r\n" + " " * 16 + "sensitivity=None," + "\r\n" + " " * 16 + "# #417",
+     "\r\n" + " " * 12 + "_sens_eff = _dec",
+     "\r\n" + " " * 12 + "_sens_eff = None",
      ("A2", "A3", "A5")),
     ("V2 补错常量：传写死的 internal（报告的 P2 对照腿）",
      "md_cg/mdcos.py",
      "\r\n" + " " * 16 + "sensitivity=_sens_eff," + "\r\n" + " " * 16 + "# #417",
      "\r\n" + " " * 16 + 'sensitivity="internal",' + "\r\n" + " " * 16 + "# #417",
      ("A2", "A3", "E3")),
-    ("V3 prefeed 支的 reinforce 不再传密级（同族未接线写点）",
+    ("V3 prefeed 支的 reinforce 丢掉声明值（同族未接线写点）",
      "md_cg/mdcos.py",
-     "\r\n" + " " * 16 + "sensitivity=sensitivity)",
-     "\r\n" + " " * 16 + ")",
-     ("E2",)),
+     "\r\n" + " " * 16 + "sensitivity=_security.declared_write_sensitivity(sensitivity))",
+     "\r\n" + " " * 16 + "sensitivity=_security.declared_write_sensitivity(None))",
+     ("E3",)),
     ("V4 判据面反转：merge_downgrades 的方向写反（改判低密级并入高密级）",
      "md_cg/security.py",
      "    return new > tgt",
      "    return new < tgt",
      ("A2", "A3", "K4")),
-    ("V5 判据被架空：reinforce 内把 incoming 密级换成 None（fail-closed 形同虚设）",
-     "md_cg/forgetting.py",
-     '    if _merge_downgrades(fm.get("sensitivity"), sensitivity):',
-     '    if _merge_downgrades(fm.get("sensitivity"), None):',
-     ("A2", "A3")),
+    # V5「reinforce 内把 incoming 密级换成 None」已**删除**（安全重构 P2，使用者
+    # 2026-10-15 裁定 incoming 未知按最高档）：该变异此后被判据层兜住、恒绿——
+    # 这正是 P2 要的结果。「漏传 ⇒ 不放行」改由 test_sensitivity_unknown_fail_closed
+    # 的 F/M 组钉住（含「回到 None 按 internal」的定点变异）。
     # V6「去掉 #313 的收口 ⇒ 本支被 CONVERGE 抢先兜住」已**删除**：实测该变异
     # 恒绿、结构性失效——CONVERGE 需要**已存在**的同模板签名，而本守卫的夹具
     # （≥200 字）两侧都产不出签名。该耦合由 #313 守卫的短夹具面覆盖，不在此重复。

@@ -458,8 +458,9 @@ def tidy_contextual(cg, apply=False, min_group=3, actor="sustain_tidy",
         # internal），internal 身份读那条 private 节点得 None、读保留节点却能看到
         # 其内容。判据复用 #148 的唯一单点 security.merge_downgrades（成员档高于
         # 保留档即**跳过、不写摘录、也不降级它**）；与 #359（审核 merge）同根
-        # 不同落点。成员档未记录时 merge_downgrades(..., None) 恒 False ⇒ 行为不变。
+        # 不同落点。成员档未记录时按节点有效密级（缺省档）判 ⇒ 行为不变。
         from .security import merge_downgrades as _md360
+        from .security import node_effective_sensitivity as _node_sens
         _ksens = (keep.get("frontmatter") or {}).get("sensitivity")
         for mid in p["members"]:
             m = cg.get(mid)
@@ -468,7 +469,9 @@ def tidy_contextual(cg, apply=False, min_group=3, actor="sustain_tidy",
             mfm = dict(m.get("frontmatter") or {})
             if mfm.get("protected") or mfm.get("immutable"):
                 continue
-            if _md360(_ksens, mfm.get("sensitivity")):
+            # 成员密级取自已落盘节点：缺字段 = 缺省档（安全重构 P2 后 None 会被
+            # merge_downgrades 按最高档处理，故此处显式取节点有效密级）。
+            if _md360(_ksens, _node_sens(mfm)):
                 continue
             first = " ".join((m.get("content") or "").split())[:48]
             lines.append(f"- {mid} {first}")

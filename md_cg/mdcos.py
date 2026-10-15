@@ -3064,6 +3064,13 @@ class MdCGOS(MdCG):
         _ovr = bool(meta.pop("override", False)) or bool(override)
         layer = item.get("layer") or "knowledge"
         sens = item.get("sensitivity")
+        # 安全重构 P2：合并判据用的 incoming 密级——提案未记密级 ⇒ 按写入入口口径
+        # 解析为缺省档（与改前 merge_downgrades 把 None 当 internal 的结果逐位相同，
+        # 只是显式化）。不取「继承目标密级」：目标为 public 时会把未知来源放进 public。
+        # **只用于 B 合并的判据**；C 改写落盘仍传原值 `sens`，fm 逐位不变（#352 K5：
+        # 落成显式 internal 会让后像指纹与后续未声明写入不一致，误判漂移）。
+        _merge_sens = (sens if sens is not None
+                       else _security.declared_write_sensitivity(None))
         pre = None
         try:
             # ---- 执行时点补全（三档自治③ · 设计 §四）----
@@ -3080,7 +3087,7 @@ class MdCGOS(MdCG):
                     res = writelimit.converge_into(self, tgt, after,
                                                    override=_ovr, actor=actor,
                                                    session=session,
-                                                   sensitivity=sens)
+                                                   sensitivity=_merge_sens)
                 else:
                     # #148（2026-10-12）：reinforce 落盘前的降密级 fail-closed 已就绪
                     # （forgetting.py:552-558），此处必须把 incoming 密级接上，否则
@@ -3095,7 +3102,7 @@ class MdCGOS(MdCG):
                     res = forgetting.reinforce(self, tgt, override=_ovr,
                                                actor=actor, content=after,
                                                session=session,
-                                               sensitivity=sens)
+                                               sensitivity=_merge_sens)
                 node_id = tgt
             elif act == _am.C_REWRITE:
                 # 补强（2026-10-02，复核观察 3）：C 的**目标节点在 accept 执行时
@@ -3400,9 +3407,9 @@ class MdCGOS(MdCG):
             # 裁决者能读到提案，实际无处检查（N201 的可见性过滤只在
             # review_list）⇒ orchestr 凭 pid 也能 merge 后读回。两步都在拼接
             # 之前、_record_decision 之前（闸放后面会被审计 try/except 吞掉）。
-            _prop_sens = (item.get("sensitivity")
-                          or (item.get("extra") or {}).get("sensitivity")
-                          or DEFAULT_SENSITIVITY)
+            _prop_sens = _security.declared_write_sensitivity(
+                item.get("sensitivity")
+                or (item.get("extra") or {}).get("sensitivity"))
                           # 未记录时按缺省档（internal）：报告建议的 "secret" 会让
                           # 「提案未声明密级」的普通 merge 全部被拒（实测 n131 G1a/G1b
                           # 转 red）——而 #148 的语义是判「incoming 高于 target」，
@@ -4105,7 +4112,7 @@ class MdCGOS(MdCG):
             out["reinforced"] = forgetting.reinforce(
                 self, vd["duplicate_with"], actor=getattr(self, "actor", None),
                 content=content, session=_writer_session(self),
-                sensitivity=sensitivity)
+                sensitivity=_security.declared_write_sensitivity(sensitivity))
         out["note"] = {"write": "已新增节点", "reinforce": "已并入既有节点（未新增）",
                        "discard": "已丢弃（不写）", "defer": "留待复核（不写不并）"}.get(dec, "")
         return out
@@ -4918,6 +4925,10 @@ class MdCGOS(MdCG):
             _sens_eff = self._write_sensitivity(node_id, None)
         else:
             _sens_eff = None
+        # 安全重构 P2：单点收尾——仍未判出（未声明且无既有节点 / 无安全层实例）⇒
+        # 写入入口缺省档。下游 merge_downgrades 现把 None 按最高档拒写，故 None 不能
+        # 再往下传；在此一处解析，下游各落点（#397 钉子）照旧只取 `_sens_eff`。
+        _sens_eff = _security.declared_write_sensitivity(_sens_eff)
         lim = writelimit.check(self, content, layer=layer, role=role,
                                node_id=node_id, importance_hint=hint,
                                # issue #313：声明密级随签名记账。缺这一行的后果：

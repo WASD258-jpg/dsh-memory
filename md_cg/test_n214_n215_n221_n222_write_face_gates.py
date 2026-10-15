@@ -372,9 +372,11 @@ def main():
           "（修前 = 追加成功）",
           (not ok_g) and exc_g in ("ProtectionError", "PermissionError"),
           "exc=%s out=%s" % (exc_g, str(out_g)[:120]), live=True)
+    # 安全重构 P2：converge_into 的 incoming 密级未声明即按最高档 fail-closed（使用者
+    # 2026-10-15 裁定）——直调方须声明本条正文的密级；本探针正文为 internal。
     ok_go, exc_go, out_go = _raises(writelimit.converge_into, _fresh(), ANCHOR_ID,
                                     "# 探针正文（凑）\n", override=True,
-                                    actor="designer")
+                                    actor="designer", sensitivity="internal")
     check("2e override=True 正路：落快照 + 审计后才追加（修前无任何留痕）",
           ok_go and out_go and out_go.get("ok") is True
           and len(protect.history(_fresh(), ANCHOR_ID)) == 1

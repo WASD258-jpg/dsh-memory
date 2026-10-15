@@ -73,7 +73,10 @@ def _crash_window(root, body="PASSED 新增补充。", src="n_x"):
     cg = MdCGOS(root)
     twophase.begin(cg, src, body, layer="knowledge", actor="writepipe:gated")
     res = forgetting.reinforce(cg, "n_t", content=body, session="s1",
-                               actor="writepipe:gated", src_id=src)
+                               actor="writepipe:gated", src_id=src,
+                               # 安全重构 P2：直调 reinforce 并入正文须声明 incoming 密级
+                               # （未声明按最高档拒写）；探针正文本就是 internal。
+                               sensitivity="internal")
     cg.flush()
     cg.close()
     return res
@@ -239,7 +242,8 @@ _cg.close()
 
 _root_n = _lib("noid")
 _cg = MdCGOS(_root_n)
-forgetting.reinforce(_cg, "n_t", content="补充。", actor="writepipe:gated")
+forgetting.reinforce(_cg, "n_t", content="补充。", actor="writepipe:gated",
+                     sensitivity="internal")   # 安全重构 P2：同上；不补则被拒写、K03 恒真
 _cg.flush(); _cg.close()
 _cg = MdCGOS(_root_n)
 _check("K03 不编造：未传 src_id ⇒ merge_source_ids 不出现该来源（缺省不记）",
