@@ -4980,11 +4980,13 @@ class MdCGOS(MdCG):
                                       "entropy": verdict["entropy"],
                                       "actor": self.actor})
                 return _ag
+            _consistency_result = {}
             try:
                 out["written"] = self.add(node_id, content, layer=layer,
                                           override=override,
                                           consistency=do_consistency,
-                                          on_conflict=on_conflict, **kw)
+                                          on_conflict=on_conflict,
+                                          _consistency_result=_consistency_result, **kw)
             except consistency.ConsistencyError as e:
                 v = out["verdict"] = "DEFER"
                 out["conflict"] = {"verdict": e.verdict, "reason": e.reason,
@@ -4992,6 +4994,16 @@ class MdCGOS(MdCG):
             else:
                 if out.get("written") is None:  # on_conflict=defer：冲突未落盘
                     v = out["verdict"] = "DEFER"
+                    # #361：ACCEPT 后的一致性降级也须保存全文；不绕过 BLINDSPOT。
+                    why = str(_consistency_result.get("reason") or "一致性闸未放行")
+                    out["conflict"] = {"verdict": _consistency_result.get("verdict"),
+                                       "reason": why,
+                                       "conflicts": _consistency_result.get("conflicts") or []}
+                    out["proposed"] = self.propose(node_id, content, layer=layer, **kw,
+                                                   defer_reason="一致性闸：" + why)
+                    out.update(ok=False, committed=False, status="pending_review",
+                               moved_to="review_queue", reason=why,
+                               hint="正文已进入审核队列（proposed）；请审核后决定，不必重复写入。")
                 else:
                     # 落盘成功 → 签名→节点映射兜底回填（同构聚合的锚点）
                     # issue #313：密级一并记账（加密级由原语内部跳过签名）
@@ -5061,7 +5073,7 @@ class MdCGOS(MdCG):
             # 只覆盖**本闸自己的** DEFER——writelimit 限流 DEFER 在上方已 return
             # （语义是「先别写」，原文在 recent 时间线，不是内容待定）；
             # gated=False 旁路与 ACCEPT 后 on_conflict=defer 的降级 DEFER 都不走
-            # 本分支（后者发生在 `if v == "ACCEPT"` 内，v 就地改写）。
+            # 本分支（后者在 ACCEPT 内入同一提案队列，见 #361）。
             # 「为何待定」写进提案的既有任意槽 extra（不新增队列字段/队列类型，
             # 见 propose 的 `**kw → extra`）；密级随 sensitivity 一并透传，避免
             # 声明 private 在此静默降级 internal（B2 同一漏传族）。

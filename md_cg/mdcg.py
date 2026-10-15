@@ -2550,6 +2550,8 @@ class MdCG:
             raise ValueError(f"未知检验强度：{check_strength}（允许：{CHECK_STRENGTHS}）")
         if uncertain_refs is not None and not isinstance(uncertain_refs, (list, tuple)):
             raise ValueError("uncertain_refs 须为短语列表（list/tuple）")
+        # #361：仅回传本次一致性裁决；此私有槽不得进入节点 frontmatter。
+        _consistency_result = extra.pop("_consistency_result", None)
         # 写保护：self/anchor 层、protected 标记、importance≥0.7 的**既有**节点
         # 不可被任意覆写；覆盖需 override=True（旧版本自动快照 + 审计留痕）。
         # N195（2026-09-28，多进程共享库形态）：写路径同样必须做代际感知——
@@ -2606,6 +2608,8 @@ class MdCG:
                              # 落盘值**（MdCGSecure.add 算出，含 #297 的既有
                              # 密级继承），正是飞轮该沿用的那个值。
                              sensitivity=extra.get("sensitivity"))
+            if isinstance(_consistency_result, dict):
+                _consistency_result.update(vd)
             v = vd["verdict"]
             if v == "REJECT" and on_conflict == "reject":
                 raise _cons.ConsistencyError(v, vd["reason"], vd["conflicts"])
